@@ -2,7 +2,7 @@ syntax="proto3";
 
 package auth;
 
-option go_package = "github.com/poponyas/GrpcChat/gen/grpc/";
+option go_package = "github.com/poponyas/GrpcChat/gen/grpc/grpc_auth";
 
 service Auth {
     rpc Register (RegisterRequest) returns (RegisterResponse);
