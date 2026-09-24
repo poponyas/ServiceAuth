@@ -2,8 +2,15 @@ package transport_grpc_auth
 
 import (
 	"context"
+	"errors"
+	"github.com/golang-jwt/jwt/v5"
+	"google.golang.org/grpc/metadata"
+	"net/mail"
+	"strconv"
+	"strings"
 
 	grpc_auth "github.com/poponyas/AuthService/gen/grpc/auth"
+	service_auth "github.com/poponyas/AuthService/internal/features/auth/service/auth"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -12,11 +19,12 @@ import (
 type serverAPI struct {
 	grpc_auth.UnimplementedAuthServer
 	auth Auth
+	key  []byte
 }
 
 // регистрируем сервер для обработчиков
-func Register(gRPC *grpc.Server, auth Auth) {
-	grpc_auth.RegisterAuthServer(gRPC, &serverAPI{auth: auth})
+func Register(gRPC *grpc.Server, auth Auth, key []byte) {
+	grpc_auth.RegisterAuthServer(gRPC, &serverAPI{auth: auth, key: key})
 }
 
 type Auth interface {
@@ -49,6 +57,12 @@ func (s *serverAPI) Login(
 
 	token, err := s.auth.Login(ctx, req.GetEmail(), req.GetPassword(), int(req.GetAppId()))
 	if err != nil {
+		if errors.Is(err, service_auth.ErrInvalidCredentials) {
+			return nil, status.Error(codes.Unauthenticated, "invalid credentials")
+		}
+		if errors.Is(err, service_auth.ErrInvalidAppId) {
+			return nil, status.Error(codes.InvalidArgument, "invalid app")
+		}
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 
@@ -67,7 +81,9 @@ func (s *serverAPI) Register(
 
 	userID, err := s.auth.RegisterNewUser(ctx, req.GetEmail(), req.GetPassword())
 	if err != nil {
-
+		if errors.Is(err, service_auth.ErrUserExists) {
+			return nil, status.Error(codes.AlreadyExists, "user already exists")
+		}
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 
@@ -82,6 +98,24 @@ func (s *serverAPI) IsAdmin(
 ) (*grpc_auth.IsAdminResponse, error) {
 	if err := validateIsAdmin(req); err != nil {
 		return nil, err
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok || len(md.Get("authorization")) != 1 || !strings.HasPrefix(md.Get("authorization")[0], "Bearer ") {
+		return nil, status.Error(codes.Unauthenticated, "Bearer token required")
+	}
+	claims := jwt.MapClaims{}
+	token, err := jwt.ParseWithClaims(strings.TrimPrefix(md.Get("authorization")[0], "Bearer "), claims, func(t *jwt.Token) (any, error) {
+		if t.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, errors.New("invalid algorithm")
+		}
+		return s.key, nil
+	}, jwt.WithIssuer("service-auth"), jwt.WithExpirationRequired())
+	if err != nil || !token.Valid {
+		return nil, status.Error(codes.Unauthenticated, "invalid token")
+	}
+	sub, err := claims.GetSubject()
+	if err != nil || sub != strconv.FormatInt(req.GetUserId(), 10) {
+		return nil, status.Error(codes.PermissionDenied, "cannot inspect another user")
 	}
 
 	isAdmin, err := s.auth.IsAdmin(ctx, req.GetUserId())
@@ -111,12 +145,13 @@ func validateLogin(req *grpc_auth.LoginRequest) error {
 }
 
 func validateRegister(req *grpc_auth.RegisterRequest) error {
-	if req.GetEmail() == "" {
-		return status.Error(codes.InvalidArgument, "email is required")
+	address, err := mail.ParseAddress(req.GetEmail())
+	if err != nil || address.Address != req.GetEmail() || strings.ContainsAny(req.GetEmail(), " \t\n") || len(req.GetEmail()) > 254 {
+		return status.Error(codes.InvalidArgument, "valid email is required")
 	}
 
-	if req.GetPassword() == "" {
-		return status.Error(codes.InvalidArgument, "password is required")
+	if len(req.GetPassword()) < 12 || len(req.GetPassword()) > 72 {
+		return status.Error(codes.InvalidArgument, "password must be 12-72 bytes")
 	}
 
 	return nil

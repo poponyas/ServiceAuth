@@ -1,26 +1,14 @@
 package core_jwt
 
 import (
-	"time"
-
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/poponyas/AuthService/internal/core/domain"
+	"strconv"
+	"time"
 )
 
-// Написать тесты на newtoken.
-func NewToken(user domain.User, app domain.App, duration time.Duration) (string, error) {
-	token := jwt.New(jwt.SigningMethodHS256)
-
-	claims := token.Claims.(jwt.MapClaims)
-	claims["uid"] = user.ID
-	claims["email"] = user.Email
-	claims["exp"] = time.Now().Add(duration).Unix()
-	claims["app_id"] = app.ID
-
-	tokenString, err := token.SignedString([]byte(app.Secret))
-	if err != nil {
-		return "", err
-	}
-
-	return tokenString, nil
+func NewToken(user domain.User, app domain.App, duration time.Duration, key []byte) (string, error) {
+	now := time.Now()
+	claims := jwt.MapClaims{"sub": strconv.FormatInt(user.ID, 10), "uid": user.ID, "aud": app.Name, "iss": "service-auth", "iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(duration).Unix(), "app_id": app.ID}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(key)
 }

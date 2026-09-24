@@ -26,6 +26,7 @@ type Auth struct {
 	usrProvider UserProvider
 	appProvider AppProvider
 	tokenttl    time.Duration
+	signingKey  []byte
 }
 
 type UserSaver interface {
@@ -50,12 +51,16 @@ func New(
 	userSaver UserSaver,
 	userProvider UserProvider,
 	appProvider AppProvider,
+	ttl time.Duration,
+	signingKey []byte,
 ) *Auth {
 	return &Auth{
 		usrSaver:    userSaver,
 		usrProvider: userProvider,
 		logger:      logger,
 		appProvider: appProvider,
+		tokenttl:    ttl,
+		signingKey:  signingKey,
 	}
 }
 
@@ -68,7 +73,6 @@ func (a *Auth) Login(
 	const op = "auth.Login"
 	log := a.logger.With(
 		zap.String("op", op),
-		zap.String("username", email),
 	)
 
 	log.Info("attemping to login user")
@@ -94,12 +98,15 @@ func (a *Auth) Login(
 
 	app, err := a.appProvider.App(ctx, appID)
 	if err != nil {
+		if errors.Is(err, service_storage.ErrAppNotFound) {
+			return "", fmt.Errorf("%s: %w", op, ErrInvalidAppId)
+		}
 		return "", fmt.Errorf("%s: %w", op, err)
 	}
 
 	log.Info("user logged in successfully")
 
-	token, err := core_jwt.NewToken(user, app, a.tokenttl)
+	token, err := core_jwt.NewToken(user, app, a.tokenttl, a.signingKey)
 	if err != nil {
 		a.logger.Error("failed to generate token", zap.Error(err))
 
@@ -117,7 +124,6 @@ func (a *Auth) RegisterNewUser(
 	const op = "auth.RegisterNewUser"
 	log := a.logger.With(
 		zap.String("op", op),
-		zap.String("email", email),
 	)
 
 	log.Info("registering user")
@@ -161,7 +167,7 @@ func (a *Auth) IsAdmin(
 
 	isAdmin, err := a.usrProvider.IsAdmin(ctx, userID)
 	if err != nil {
-		if errors.Is(err, service_storage.ErrAppNotFound) {
+		if errors.Is(err, service_storage.ErrUserNotFound) {
 			log.Warn("user not found", zap.Error(err))
 
 			return false, fmt.Errorf("%s: %w", op, ErrInvalidAppId)

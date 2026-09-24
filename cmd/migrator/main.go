@@ -1,62 +1,39 @@
 package main
 
 import (
+	"context"
 	"errors"
-	"flag"
 	"fmt"
-
-	// Библиотека для миграций
 	"github.com/golang-migrate/migrate/v4"
-	// Драйвер для выполнения миграций SQLite 3
-	_ "github.com/golang-migrate/migrate/v4/database/sqlite3"
-	// Драйвер для получения миграций из файлов
+	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/poponyas/AuthService/internal/core/secrets"
+	"os"
 )
 
 func main() {
-	var storagePath, migrationsPath, migrationsTable string
-
-	// Получаем необходимые значения из флагов запуска
-
-	// Путь до файла БД.
-	// Его достаточно, т.к. мы используем SQLite, другие креды не нужны.
-	flag.StringVar(&storagePath, "storage-path", "", "path to storage")
-	// Путь до папки с миграциями.
-	flag.StringVar(&migrationsPath, "migrations-path", "", "path to migrations")
-	// Таблица, в которой будет храниться информация о миграциях. Она нужна
-	// для того, чтобы понимать, какие миграции уже применены, а какие нет.
-	// Дефолтное значение - 'migrations'.
-	flag.StringVar(&migrationsTable, "migrations-table", "migrations", "name of migrations table")
-	flag.Parse() // Выполняем парсинг флагов
-
-	// Валидация параметров
-	if storagePath == "" {
-		// Простейший способ обработки ошибки :)
-		// При необходимости, можете выбрать более подходящий вариант.
-		// Меня паника пока устраивает, поскольку это вспомогательная утилита.
-		panic("storage-path is required")
+	if os.Getenv("VAULT_ADDR") != "" {
+		data, err := secrets.Load(context.Background(), "service-auth")
+		if err != nil {
+			panic(err)
+		}
+		_ = os.Setenv("DATABASE_URL", data["database_url"])
 	}
-	if migrationsPath == "" {
-		panic("migrations-path is required")
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		panic("DATABASE_URL is required")
 	}
-
-	// Создаем объект мигратора, передав креды нашей БД
-	m, err := migrate.New(
-		"file://"+migrationsPath,
-		fmt.Sprintf("sqlite3://%s?x-migrations-table=%s", storagePath, migrationsTable),
-	)
+	path := "file://migrations"
+	if len(os.Args) > 1 {
+		path = "file://" + os.Args[1]
+	}
+	m, err := migrate.New(path, dsn)
 	if err != nil {
 		panic(err)
 	}
-
-	// Выполняем миграции до последней версии
-	if err := m.Up(); err != nil {
-		if errors.Is(err, migrate.ErrNoChange) {
-			fmt.Println("no migrations to apply")
-
-			return
-		}
-
+	defer m.Close()
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		panic(err)
 	}
+	fmt.Println("migrations applied")
 }
